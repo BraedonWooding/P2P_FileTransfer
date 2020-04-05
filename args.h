@@ -28,7 +28,7 @@
     fprintf(stderr, "Error [%s]: %s is missing!\n", arg_parser_argv[0], #into);\
     USAGE_EXIT(); \
   } else if (!try_parse_strtol(arg_parser_argv[0], \
-                        arg_parser_argv[arg_parser_cur++], (into))) \
+                               arg_parser_argv[arg_parser_cur++], (into))) \
     USAGE_EXIT(); \
 } while(0)
 

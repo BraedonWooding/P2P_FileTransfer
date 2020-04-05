@@ -1,12 +1,16 @@
 
-CFLAGS=-g
-CC=dcc
+# We link against pthread to get access to ISO C threads
+# Mild performance selection of O2.
+CFLAGS=-pthread -std=c11 -O2
+CC=gcc
 
-p2p: p2p_client.o utils.o
-	$(CC) $(CFLAGS) -o p2p p2p_client.o utils.o
-p2p_client.o: p2p_client.c
+p2p: entry.o utils.o ping.o p2p_peer.o
+	$(CC) $(CFLAGS) -o p2p entry.o utils.o ping.o p2p_peer.o
+entry.o: entry.c
 utils.o: utils.c
+ping.o: ping.c
+p2p_peer.o: p2p_peer.c
 
 .PHONY : clean
 clean:
-	-rm p2p utils.o p2p_client.o
+	-rm p2p entry.o utils.o ping.o p2p_peer.o
