@@ -12,6 +12,7 @@ static p2p_peer_info info = {
   .first_successor = -1, .second_successor = -1, .peer = -1
 };
 static pthread_mutex_t info_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t info_wait = PTHREAD_MUTEX_INITIALIZER;
 
 void init_peer(int peer, int first, int second, int ping,
                     pthread_t *ping_thrd, pthread_t *tcp_thrd) {
@@ -55,16 +56,29 @@ int get_peer(void) {
   SCOPED_MTX_LOCK(&info_lock) return info.peer;
 }
 
-int get_first_successor(void) {
-  SCOPED_MTX_LOCK(&info_lock) return info.first_successor;
+int get_first_successor(int wait) {
+  SCOPED_MTX_LOCK(&info_lock) {
+    while (wait && info.first_successor == -1) {
+      pthread_cond_wait(&info_wait, &info_lock);
+    }
+
+    return info.first_successor;
+  }
 }
 
-int get_second_successor(void) {
-  SCOPED_MTX_LOCK(&info_lock) return info.second_successor;
+int get_second_successor(int wait) {
+  SCOPED_MTX_LOCK(&info_lock) {
+    while (wait && info.second_successor == -1) {
+      pthread_cond_wait(&info_wait, &info_lock);
+    }
+
+    return info.second_successor;
+  }
 }
 
 int clear_first_successor(void) {
   SCOPED_MTX_LOCK(&info_lock) {
+    drop_ping_info(info.first_successor + MIN_PEER_PORT);
     int tmp = info.first_successor;
     info.first_successor = -1;
     return tmp;
@@ -73,6 +87,7 @@ int clear_first_successor(void) {
 
 int clear_second_successor(void) {
   SCOPED_MTX_LOCK(&info_lock) {
+    drop_ping_info(info.second_successor + MIN_PEER_PORT);
     int tmp = info.second_successor;
     info.second_successor = -1;
     return tmp;
@@ -84,10 +99,13 @@ int set_first_successor(int next) {
     if (info.first_successor != -1) {
       return info.first_successor;
     } else {
+      initialise_ping_info(IP_ADDR, next);
       info.first_successor = next;
-      return 0;
     }
   }
+
+  pthread_cond_broadcast(&info_wait);
+  return 0;
 }
 
 int set_second_successor(int next) {
@@ -95,17 +113,32 @@ int set_second_successor(int next) {
     if (info.second_successor != -1) {
       return info.second_successor;
     } else {
+      initialise_ping_info(IP_ADDR, next);
       info.second_successor = next;
-      return 0;
     }
   }
+
+  pthread_cond_broadcast(&info_wait);
+  return 0;
 }
 
 void clear_and_set_successors(int first, int second) {
   SCOPED_MTX_LOCK(&info_lock) {
+    if (info.first_successor != first) {
+      drop_ping_info(info.first_successor + MIN_PEER_PORT);
+      initialise_ping_info(IP_ADDR, first);
+    }
+
+    if (info.second_successor != second) {
+      drop_ping_info(info.second_successor + MIN_PEER_PORT);
+      initialise_ping_info(IP_ADDR, second);
+    }
+
     info.first_successor = first;
     info.second_successor = second;
   }
+
+  pthread_cond_broadcast(&info_wait);
 }
 
 void close_peer(void) {
@@ -114,14 +147,17 @@ void close_peer(void) {
 
 void verify_peers() {
   // TODO: Errors
-  int first = initialise_ping_info(IP_ADDR, get_first_successor());
-  int second = initialise_ping_info(IP_ADDR, get_second_successor());
+  int first = get_first_successor(0);
+  int second = get_second_successor(0);
+  if (first != -1) {
+    first = initialise_ping_info(IP_ADDR, first);
+    send_pingfd(first, PING_REQ, 0);
+  }
 
-  // we don't need to lock here because we aren't sending pings yet
-  // since the interval is setup post this... otherwise we would
-  // need to lock our usage of the default socket...
-  send_pingfd(first, PING_TYPE_REQ, 0);
-  send_pingfd(second, PING_TYPE_REQ, 0);
+  if (second != -1) {
+    second = initialise_ping_info(IP_ADDR, second);
+    send_pingfd(second, PING_REQ, 0);
+  }
 }
 
 pthread_t setup_ping_interval() {

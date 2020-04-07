@@ -38,12 +38,42 @@ typedef struct cleanup_callback_t {
 
 inline void cleanup_call(cleanup_callback *cleanup) INLINE_ATTR;
 
-#define SCOPED_REGION(acq, rel, _arg) \
+inline void cleanup_call(cleanup_callback *cleanup) {
+  cleanup->cleanup_handle(cleanup->arg);
+}
+
+/*
+  Define a scoped region using some goto magic
+
+  Roughly this effectively is just doing
+  {
+    acq()
+    {
+      // your block
+    }
+    rel()
+  }
+
+  We have to define it like this to prevent accidental
+  leaks i.e. if you do
+  MTX_LOCK(&lock) if (a) printf("Something")
+
+  The lock should only exist inside that if statement
+  we use the amazing cleanup attribute to do the majority
+  of the work for us and the rest is just us being clever
+  with for loops to create the variables with a given scope
+  and then using gotos to simulate a block control flow.
+
+  As said before majority of this is easily compiled away
+  since everything gets inlined very nicely.
+  and the compiler can very easily see that no for loop
+  is actually run more than once.
+*/
+#define SCOPED_REGION(init, var) \
   if (0) { \
     CONCAT(_done_, __LINE__): \
     ; \
-  } else for (cleanup_callback _locked_scope_tmp CLEANUP_ATTR(cleanup_call) \
-    = (cleanup_callback){ .arg = _arg, .cleanup_handle = rel }; acq(_arg), 1;) \
+  } else for (init) for (var ;;) \
     if (1) \
       goto CONCAT(_body_, __LINE__); \
     else \
@@ -53,8 +83,21 @@ inline void cleanup_call(cleanup_callback *cleanup) INLINE_ATTR;
         else \
           CONCAT(_body_, __LINE__):
 
+// lock styled i.e. you initialise outside of the specific take
+#define SCOPED_LOCK(acq, rel, lock) \
+  SCOPED_REGION(cleanup_callback _locked_scope_tmp CLEANUP_ATTR(cleanup_call) \
+    = ((cleanup_callback){ .arg = lock, .cleanup_handle = (cleanup_handle_fn)rel }); (acq(lock), 1);,)
+
+#define SCOPED_WITH(type, name, init, rel, ...) \
+  SCOPED_REGION(cleanup_callback _locked_scope_tmp CLEANUP_ATTR(cleanup_call) \
+    = ((cleanup_callback){ .arg = init(__VA_ARGS__), .cleanup_handle = (cleanup_handle_fn)rel });;, \
+    type name = (type)_locked_scope_tmp.arg)
+
 #define SCOPED_MTX_LOCK(lock) \
-  SCOPED_REGION(pthread_mutex_lock,(cleanup_handle_fn)pthread_mutex_unlock,lock)
+  SCOPED_LOCK(pthread_mutex_lock, pthread_mutex_unlock, lock)
+
+#define SCOPED_FILE(name, path, mode) \
+  SCOPED_WITH(FILE *, name, fopen, fclose, path, mode)
 
 void set_sockaddr(struct sockaddr_in *sock, char *ip, int port);
 
@@ -73,17 +116,14 @@ int try_parse_posint(char *in);
 #define READ_MSG_TYPE(id, buf, delim) \
   char *_save_ptr_##id; \
   char *_delim_##id = delim; \
-  char *_tok_##id; \
   do { \
-    _tok_##id = strtok_r(buf, _delim_##id, &_save_ptr_##id); \
-    if (!_tok_##id) { \
+    if (!strtok_r(buf, _delim_##id, &_save_ptr_##id)) { \
       fprintf(stderr, "Error: Missing msg type\n"); \
       buf[0] = '\0'; \
     } \
   } while (0)
 
 #define READ_MSG_POSINT(id) \
-  (_tok_##id = strtok_r(NULL, _delim_##id, &_save_ptr_##id), \
-  try_parse_posint(_tok_##id))
+  try_parse_posint(strtok_r(NULL, _delim_##id, &_save_ptr_##id))
 
 #endif

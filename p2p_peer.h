@@ -30,12 +30,12 @@ int get_peer(void);
 /*
   Get the first successor for this p2p client.
  */
-int get_first_successor(void);
+int get_first_successor(int wait);
 
 /*
   Get the second successor for this p2p client.
  */
-int get_second_successor(void);
+int get_second_successor(int wait);
 
 /*
   Clear the first successor for the p2p client.

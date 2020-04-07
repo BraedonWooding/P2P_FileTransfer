@@ -10,6 +10,7 @@
 #include <time.h>
 
 #include "utils.h"
+#include "tcp.h"
 #include "p2p_peer.h"
 
 typedef struct ping_info_t {
@@ -39,6 +40,7 @@ static ping_info ping_rets[MAX_PING_FDS] = {};
 static int ping_preds[MAX_PING_FDS] = {};
 
 static pthread_mutex_t ping_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t ping_wait = PTHREAD_COND_INITIALIZER;
 static int send_socket = -1;
 static int read_socket;
 
@@ -57,42 +59,114 @@ void *ping_thrd_ticker(void *_ UNUSED_ATTR) {
 
   for (;;) {
     time_t shortest = 0;
+    int abrupt = -1;
 
     SCOPED_MTX_LOCK(&ping_lock) for (int i = 0; i < MAX_PING_FDS; i++) {
       time_t cur = time(NULL);
       char *ip = ping_rets[i].ip;
       int port = ping_rets[i].port;
       time_t next = ping_rets[i].next_ping_event;
-      // printf("%d: %ld\n", i, next ? next - cur : 0);
       if (port && ip && next && next <= cur) {
         int diff = ping_rets[i].last_seq_sent - ping_rets[i].last_seq_received;
         if (diff >= PINGS_ABRUPT) {
           // they are abrupt
           printf("> Peer %d is no longer alive\n", port - MIN_PEER_PORT);
-          // TODO: fix this...
-          exit(1);
+          abrupt = i;
+          break;
         } else {
           int seq = ++ping_rets[i].last_seq_sent;
           send_ping(ip, port, PING_REQ, send_socket, seq);
         }
+        ping_rets[i].next_ping_event = cur + ping_interval;
+        if (!shortest) shortest = ping_interval;
       } else if (next && (!shortest || cur - next < shortest)) {
         // shorter time to wait upon
         shortest = cur - next;
       } else if (!next) {
         ping_rets[i].next_ping_event = cur + ping_interval;
+        if (!shortest) shortest = ping_interval;
       }
     }
 
-    time_t diff = shortest ? shortest : ping_interval;
-    // printf("%ld %ld\n", diff, shortest);
+    switch (abrupt) {
+      case 0: {
+        int left = clear_first_successor();
+
+        // this is explicitly non blocking...
+        // we don't want them to go looking for their second
+        // during the first, if they don't have a second then
+        // that is a big problem.
+        int second = get_second_successor(0);
+        if (second == -1) {
+          fprintf(stderr, "Error: Peer %d has lost it's first successor"
+                  " and has no second successor exiting...\n", get_peer());
+          // We don't have to send a leave request because what data would we
+          // send them... both our successors are invalidated!
+          exit(1);
+        }
+
+        int new = tcp_send_abrupt(second, left);
+        if (new < 0) {
+          // This can only really happen if the other successor drops
+          // in which we again can't actually handle in a nice manner
+          // so we'll just exit
+          // (there is no ability for us to grab a successor if this fails)
+          fprintf(stderr, "Error: Got invalid successor talking to %d exiting...\n", second);
+          exit(1);
+        }
+        printf("> My new first successor is Peer %d\n", second);
+        printf("> My new second successor is Peer %d\n", new);
+        clear_and_set_successors(second, new);
+      } break;
+      case 1: {
+        int left = clear_second_successor();
+
+        // this is explicitly non blocking...
+        // we don't want them to go looking for their second
+        // during the first, if they don't have a second then
+        // that is a big problem.
+        int first = get_first_successor(0);
+        if (first == -1) {
+          fprintf(stderr, "Error: Peer %d has lost it's second successor"
+                  " and has no first successor exiting...\n", get_peer());
+          // We don't have to send a leave request because what data would we
+          // send them... both our successors are invalidated!
+          exit(1);
+        }
+
+        int new = tcp_send_abrupt(first, left);
+        if (new < 0) {
+          // This can only really happen if the other successor drops
+          // in which we again can't actually handle in a nice manner
+          // so we'll just exit
+          // (there is no ability for us to grab a successor if this fails)
+          fprintf(stderr, "Error: Got invalid successor talking to %d exiting...\n", first);
+          exit(1);
+        }
+        printf("> My new first successor is Peer %d\n", first);
+        printf("> My new second successor is Peer %d\n", new);
+        clear_and_set_successors(first, new);
+      } break;
+    }
+
+    if (!shortest) {
+      SCOPED_MTX_LOCK(&ping_lock) {
+        // we require atleast one object to be initialised
+        while (!ping_rets[0].port) pthread_cond_wait(&ping_wait, &ping_lock);
+      }
+      continue;
+    }
+
     // sleep till next send is available
-    sleep(diff);
+    sleep(shortest);
   }
 
   pthread_exit(NULL);
 }
 
 void *init_ping_module(void *_) {
+  memset(ping_preds, -1, sizeof(int) * MAX_PING_FDS);
+
   // for recv'ing pings
   read_socket = socket(AF_INET, SOCK_DGRAM, 0);
 
@@ -133,12 +207,8 @@ int send_ping(char *ip, int port, ping_type type, int socket, int seq) {
   }
 
   ssize_t count = 0;
-  ssize_t bytes_served = 0;
-  while (count > 0 || !bytes_served) {
-    count = sendto(socket, buf + bytes_served, strlen(buf) - bytes_served, 0,
-                  (struct sockaddr *)&ping_out, sizeof(ping_out));
-    if (count >= 0) bytes_served += count;
-  }
+  count = sendto(socket, buf, strlen(buf), 0,
+                (struct sockaddr *)&ping_out, sizeof(ping_out));
   return count >= 0 ? strlen(buf) - count : -1;
 }
 
@@ -169,10 +239,17 @@ void ping_receiver_thread() {
   for (;;) {
     len = sizeof(in);
     memset(&in, 0, len);
-    count = recvfrom(read_socket, buf, BUF_LEN, 0, (struct sockaddr *)&in, &len);
+    count = recvfrom(read_socket, buf, PING_BUF, 0, (struct sockaddr *)&in, &len);
+    if (count == 0) break;
+
+    buf[count] = '\0';
     READ_MSG_TYPE(0, buf, " ");
     int seq = READ_MSG_POSINT(0);
     int peer = READ_MSG_POSINT(0);
+    if (seq < 0 || peer < 0) {
+      // not a valid request this is fine
+      break;
+    }
 
     port = peer + MIN_PEER_PORT;
     if (!strcmp(buf, PING_MSG(PING_ACK))) {
@@ -197,9 +274,9 @@ void ping_receiver_thread() {
       }
     } else if (!strcmp(buf, PING_MSG(PING_REQ))) {
       // we'll send back an acknowledgement
-      printf("> Ping request received from Peer %d\n", port - MIN_PEER_PORT);
+      printf("> Ping request received from Peer %d\n", peer);
       int swp = ping_preds[0];
-      ping_preds[0] = port - MIN_PEER_PORT;
+      ping_preds[0] = peer;
 
       SCOPED_MTX_LOCK(&ping_lock) for (int i = 1; swp && i < MAX_PING_FDS; i++){
         int tmp = ping_preds[i];
@@ -231,13 +308,19 @@ void ping_receiver_thread() {
 int get_preds(int preds[MAX_PING_FDS]) {
   int count = 0;
   SCOPED_MTX_LOCK(&ping_lock) for (int i = 0; i < MAX_PING_FDS; i++) {
-    if (ping_preds[i]) preds[count++] = ping_preds[i];
+    preds[count++] = ping_preds[i];
   }
   return count;
 }
 
-int drop_ping_info(int ping_fd) {
-  return 0;
+void drop_ping_info(int port) {
+  SCOPED_MTX_LOCK(&ping_lock) for (int i = 0; i < MAX_PING_FDS; i++) {
+    if (ping_rets[i].port == port) {
+      // free spot
+      ping_rets[i] = (ping_info){};
+      break;
+    }
+  }
 }
 
 int initialise_ping_info(char *ip, int peer) {
@@ -245,6 +328,7 @@ int initialise_ping_info(char *ip, int peer) {
     if (!ping_rets[i].port) {
       // free spot
       ping_rets[i] = (ping_info){.ip = ip, .port = peer + MIN_PEER_PORT};
+      pthread_cond_broadcast(&ping_wait);
       return i;
     }
   }

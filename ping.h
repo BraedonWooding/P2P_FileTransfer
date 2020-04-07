@@ -25,6 +25,8 @@ typedef enum ping_type_t {
 
 int send_pingfd(int ping_fd, ping_type type, int seq);
 
+void drop_ping_info(int port);
+
 int send_ping(char *ip, int port, ping_type type, int socket, int seq);
 
 int initialise_ping_info(char *ip, int peer);

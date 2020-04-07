@@ -30,5 +30,7 @@ void *tcp_watcher(void *_ UNUSED_ATTR);
 
 int tcp_send_join_req(int known_peer, int self);
 int tcp_send_new_socket(int peer, char buf[]);
+void tcp_send_quit_req(void);
+int tcp_send_abrupt(int known, int left);
 
 #endif

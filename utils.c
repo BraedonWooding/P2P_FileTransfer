@@ -7,10 +7,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-void cleanup_call(cleanup_callback *cleanup) {
-  cleanup->cleanup_handle(cleanup->arg);
-}
-
 void set_sockaddr(struct sockaddr_in *sock, char *ip, int port) {
   memset(sock, 0, sizeof(*sock));
   sock->sin_family = AF_INET; // IPv4;
@@ -29,6 +25,7 @@ int try_parse_posint(char *in) {
     return -1;
   } else if (out < 0) {
     fprintf(stderr, "Error %d is negative.\n", out);
+    return -1;
   } else {
     return out;
   }
@@ -36,7 +33,6 @@ int try_parse_posint(char *in) {
 
 int try_parse_strtol(char *prog, char *in, int *out) {
   if (in == NULL) {
-    fprintf(stderr, "Error <NULL> is not a valid number.\n");
     return 0;
   }
 
