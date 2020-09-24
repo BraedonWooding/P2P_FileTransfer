@@ -11,4 +11,6 @@
  * A powerful p2p client written entirely in C *
  **                                           **/
 
+void exit_handler(int code);
+
 #endif

@@ -22,6 +22,8 @@
   to if you had inserted the calls at each return callsite.
 */
 
+#define PEER_HASH(x) ((x % 256))
+
 #define _CONCAT(t1, t2) t1 ## t2
 #define CONCAT(t1, t2) _CONCAT(t1, t2)
 
@@ -31,15 +33,24 @@ typedef void (*cleanup_handle_fn)(void *arg);
 #define UNUSED_ATTR __attribute__((unused))
 #define INLINE_ATTR __attribute__((always_inline))
 
+/*
+  Abstracted form of a cleanup.  You shouldn't not need to use this in
+  any way.  It is wrapped entirely by the guard macros.
+*/
 typedef struct cleanup_callback_t {
   void *arg;
   cleanup_handle_fn cleanup_handle;
 } cleanup_callback;
 
+// Force inline of cleanup call!!
+// extremely important for optimisation
 inline void cleanup_call(cleanup_callback *cleanup) INLINE_ATTR;
 
 inline void cleanup_call(cleanup_callback *cleanup) {
-  cleanup->cleanup_handle(cleanup->arg);
+  // as you can see it's a very straightforward cleanup.
+  // we don't call your arg with NULL though because we expect
+  // you to handle NULL as a sentinel.
+  if (cleanup->arg) cleanup->cleanup_handle(cleanup->arg);
 }
 
 /*
@@ -77,17 +88,25 @@ inline void cleanup_call(cleanup_callback *cleanup) {
     if (1) \
       goto CONCAT(_body_, __LINE__); \
     else \
-      while (1) \
+      while (1) while(1) \
         if (1) \
           goto CONCAT(_done_, __LINE__); \
         else \
           CONCAT(_body_, __LINE__):
 
-// lock styled i.e. you initialise outside of the specific take
+/*
+  Useful if you have a lock styled piece of code.
+  will bind as much as a forloop binds.
+*/
 #define SCOPED_LOCK(acq, rel, lock) \
   SCOPED_REGION(cleanup_callback _locked_scope_tmp CLEANUP_ATTR(cleanup_call) \
-    = ((cleanup_callback){ .arg = lock, .cleanup_handle = (cleanup_handle_fn)rel }); (acq(lock), 1);,)
+    = ((cleanup_callback){ .arg = lock, .cleanup_handle = (cleanup_handle_fn)rel }); \
+    (acq(lock), 1);,)
 
+/*
+  Pythonic styled with.
+  Binds as much as a forloop binds.
+*/
 #define SCOPED_WITH(type, name, init, rel, ...) \
   SCOPED_REGION(cleanup_callback _locked_scope_tmp CLEANUP_ATTR(cleanup_call) \
     = ((cleanup_callback){ .arg = init(__VA_ARGS__), .cleanup_handle = (cleanup_handle_fn)rel });;, \
@@ -101,7 +120,16 @@ inline void cleanup_call(cleanup_callback *cleanup) {
 
 void set_sockaddr(struct sockaddr_in *sock, char *ip, int port);
 
+/*
+  Try to parse a long integer.  Just a loose wrapper around strtol
+*/
 int try_parse_strtol(char *prog, char *in, int *out);
+
+/*
+  Try to parse a positive 32 bit integer.
+  If parsing fails or if it parses a negative integer or if the integer
+  is too large it'll return -1.
+ */
 int try_parse_posint(char *in);
 
 /*
@@ -125,5 +153,8 @@ int try_parse_posint(char *in);
 
 #define READ_MSG_POSINT(id) \
   try_parse_posint(strtok_r(NULL, _delim_##id, &_save_ptr_##id))
+
+#define READ_MSG_STR(id) \
+  strtok_r(NULL, _delim_##id, &_save_ptr_##id)
 
 #endif

@@ -78,14 +78,31 @@ int set_second_successor(int next);
  */
 void clear_and_set_successors(int first, int second);
 
-void join_peer(int peer, int known, int ping,
-                    pthread_t *ping_thrd, pthread_t *tcp_thrd);
-void init_peer(int peer, int first, int second, int ping,
+/*
+  Joins a network using a known peer.
+*/
+int join_peer(int peer, int known, int ping,
                     pthread_t *ping_thrd, pthread_t *tcp_thrd);
 
+/*
+  Initialises network with two known peers.
+*/
+int init_peer(int peer, int first, int second, int ping,
+                    pthread_t *ping_thrd, pthread_t *tcp_thrd);
+
+/*
+  Closes down the peer.
+*/
 void close_peer(void);
 
+/*
+  Verify existence of peers
+*/
 void verify_peers();
+
+/*
+  Sets up a ping ticking thread.
+*/
 pthread_t setup_ping_interval();
 
 #endif

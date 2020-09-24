@@ -8,10 +8,12 @@
 #include <errno.h>
 #include <string.h>
 #include <time.h>
+#include <signal.h>
 
 #include "utils.h"
 #include "tcp.h"
 #include "p2p_peer.h"
+#include "entry.h"
 
 typedef struct ping_info_t {
   // the IP we are sending to
@@ -48,7 +50,7 @@ static int read_socket;
 
 #define PING_MSG(x) (#x)
 #define PING_BUF (25)
-#define PINGS_ABRUPT (3)
+#define PINGS_ABRUPT (2)
 
 static void ping_receiver_thread();
 
@@ -88,65 +90,29 @@ void *ping_thrd_ticker(void *_ UNUSED_ATTR) {
       }
     }
 
-    switch (abrupt) {
-      case 0: {
-        int left = clear_first_successor();
+    if (abrupt != -1) {
+      // this is explicitly non blocking...
+      // we don't want them to go looking for their second
+      // during the first, if they don't have a second then
+      // that is a big problem.
+      int left = abrupt == 1 ? clear_first_successor() : clear_second_successor();
+      int new_first = abrupt == 1 ? get_first_successor(0) : get_second_successor(0);
 
-        // this is explicitly non blocking...
-        // we don't want them to go looking for their second
-        // during the first, if they don't have a second then
-        // that is a big problem.
-        int second = get_second_successor(0);
-        if (second == -1) {
-          fprintf(stderr, "Error: Peer %d has lost it's first successor"
-                  " and has no second successor exiting...\n", get_peer());
-          // We don't have to send a leave request because what data would we
-          // send them... both our successors are invalidated!
-          exit(1);
-        }
+      if (new_first == -1) {
+        fprintf(stderr, "Error: Peer %d has both successors so it can't reconnect\n", get_peer());
+        // We don't have to send a leave request because what data would we
+        // send them... both our successors are invalidated!
+        exit_handler(SIGABRT);
+      }
 
-        int new = tcp_send_abrupt(second, left);
-        if (new < 0) {
-          // This can only really happen if the other successor drops
-          // in which we again can't actually handle in a nice manner
-          // so we'll just exit
-          // (there is no ability for us to grab a successor if this fails)
-          fprintf(stderr, "Error: Got invalid successor talking to %d exiting...\n", second);
-          exit(1);
-        }
-        printf("> My new first successor is Peer %d\n", second);
-        printf("> My new second successor is Peer %d\n", new);
-        clear_and_set_successors(second, new);
-      } break;
-      case 1: {
-        int left = clear_second_successor();
-
-        // this is explicitly non blocking...
-        // we don't want them to go looking for their second
-        // during the first, if they don't have a second then
-        // that is a big problem.
-        int first = get_first_successor(0);
-        if (first == -1) {
-          fprintf(stderr, "Error: Peer %d has lost it's second successor"
-                  " and has no first successor exiting...\n", get_peer());
-          // We don't have to send a leave request because what data would we
-          // send them... both our successors are invalidated!
-          exit(1);
-        }
-
-        int new = tcp_send_abrupt(first, left);
-        if (new < 0) {
-          // This can only really happen if the other successor drops
-          // in which we again can't actually handle in a nice manner
-          // so we'll just exit
-          // (there is no ability for us to grab a successor if this fails)
-          fprintf(stderr, "Error: Got invalid successor talking to %d exiting...\n", first);
-          exit(1);
-        }
-        printf("> My new first successor is Peer %d\n", first);
-        printf("> My new second successor is Peer %d\n", new);
-        clear_and_set_successors(first, new);
-      } break;
+      int new = tcp_send_abrupt(new_first, left);
+      if (new < 0) {
+        fprintf(stderr, "Error: Got invalid successor talking to %d exiting...\n", new_first);
+        exit_handler(SIGABRT);
+      }
+      printf("> My new first successor is Peer %d\n", new_first);
+      printf("> My new second successor is Peer %d\n", new);
+      clear_and_set_successors(new_first, new);
     }
 
     if (!shortest) {
@@ -173,7 +139,11 @@ void *init_ping_module(void *_) {
   struct sockaddr_in bind_addr;
   set_sockaddr(&bind_addr, IP_ADDR, get_peer() + MIN_PEER_PORT);
   setsockopt(read_socket, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int));
-  bind(read_socket, (struct sockaddr *)&bind_addr, sizeof(bind_addr));
+  setsockopt(read_socket, SOL_SOCKET, SO_REUSEPORT, &(int){1}, sizeof(int));
+  if (bind(read_socket, (struct sockaddr *)&bind_addr, sizeof(bind_addr))) {
+    printf("> Ping Bind failed :(");
+    perror("bind");
+  }
 
   // move control to receiver thread
   ping_receiver_thread();
@@ -182,6 +152,7 @@ void *init_ping_module(void *_) {
 
 void destroy_ping_module(void) {
   close(send_socket);
+  shutdown(read_socket, SHUT_RDWR);
   close(read_socket);
 }
 

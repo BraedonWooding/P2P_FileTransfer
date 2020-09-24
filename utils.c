@@ -14,11 +14,6 @@ void set_sockaddr(struct sockaddr_in *sock, char *ip, int port) {
   inet_pton(AF_INET, ip, &sock->sin_addr);
 }
 
-/*
-  Try to parse a positive integer.
-  If parsing fails or if it parses a negative integer
-  it'll return -1.
- */
 int try_parse_posint(char *in) {
   int out;
   if (!try_parse_strtol("", in, &out)) {

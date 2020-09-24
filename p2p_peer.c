@@ -3,6 +3,7 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 #include "ping.h"
 #include "utils.h"
@@ -12,9 +13,9 @@ static p2p_peer_info info = {
   .first_successor = -1, .second_successor = -1, .peer = -1
 };
 static pthread_mutex_t info_lock = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t info_wait = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t info_wait = PTHREAD_COND_INITIALIZER;
 
-void init_peer(int peer, int first, int second, int ping,
+int init_peer(int peer, int first, int second, int ping,
                     pthread_t *ping_thrd, pthread_t *tcp_thrd) {
   info.peer = peer;
   info.first_successor = first;
@@ -25,13 +26,13 @@ void init_peer(int peer, int first, int second, int ping,
 
   pthread_create(ping_thrd, NULL, init_ping_module, NULL);
   pthread_create(tcp_thrd, NULL, tcp_watcher, NULL);
+  return 0;
 }
 
-void join_peer(int peer, int known, int ping, pthread_t *ping_thrd,
+int join_peer(int peer, int known, int ping, pthread_t *ping_thrd,
                     pthread_t *tcp_thrd) {
   info.peer = peer;
   info.ping_interval = ping;
-
   printf("> Peer %d join\n", peer);
 
   // we still want to be able to send pings responses out
@@ -46,6 +47,7 @@ void join_peer(int peer, int known, int ping, pthread_t *ping_thrd,
 
   // and the tcp watcher will just cancel all responses till we get our data
   // note: we probably want to make this a condition variable wait...
+  return 0;
 }
 
 int get_ping_interval(void) {
@@ -59,6 +61,7 @@ int get_peer(void) {
 int get_first_successor(int wait) {
   SCOPED_MTX_LOCK(&info_lock) {
     while (wait && info.first_successor == -1) {
+      printf("I'm in the middle of getting my next first successor so I'll wait...\n");
       pthread_cond_wait(&info_wait, &info_lock);
     }
 
@@ -69,6 +72,7 @@ int get_first_successor(int wait) {
 int get_second_successor(int wait) {
   SCOPED_MTX_LOCK(&info_lock) {
     while (wait && info.second_successor == -1) {
+      printf("I'm in the middle of getting my next second successor so I'll wait...\n");
       pthread_cond_wait(&info_wait, &info_lock);
     }
 
@@ -149,6 +153,7 @@ void verify_peers() {
   // TODO: Errors
   int first = get_first_successor(0);
   int second = get_second_successor(0);
+  sleep(1);
   if (first != -1) {
     first = initialise_ping_info(IP_ADDR, first);
     send_pingfd(first, PING_REQ, 0);
